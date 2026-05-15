@@ -148,3 +148,74 @@ class TestGetSnapshotInfo:
             assert info["file_size"] > 0
         finally:
             os.unlink(filepath)
+
+
+class TestDeduplication:
+    def test_identical_definitions_deduplicated(self):
+        extracted = {
+            "tables": {},
+            "procedures": {
+                "dbo.Proc1": {"definition": "CREATE OR ALTER PROC dbo.Shared AS SELECT 1", "hash": "h1"},
+                "dbo.Proc2": {"definition": "CREATE OR ALTER PROC dbo.Shared AS SELECT 1", "hash": "h1"},
+                "dbo.Proc3": {"definition": "CREATE OR ALTER PROC dbo.Unique AS SELECT 2", "hash": "h2"},
+            },
+            "functions": {},
+            "triggers": {},
+            "_meta": {"server": "localhost", "database": "TestDB"},
+        }
+        snap = create_snapshot(extracted)
+        
+        with tempfile.NamedTemporaryFile(suffix=".dbsnap", delete=False) as f:
+            filepath = f.name
+        
+        try:
+            save_snapshot(snap, filepath)
+            
+            with open(filepath, 'rb') as f:
+                f.read(8)
+                compressed = f.read()
+            
+            decompressor = zstd.ZstdDecompressor()
+            json_data = decompressor.decompress(compressed)
+            raw = json.loads(json_data.decode('utf-8'))
+            
+            assert len(raw["defs"]) == 2
+            
+            loaded = load_snapshot(filepath)
+            assert loaded["procedures"]["dbo.Proc1"]["definition"] == "CREATE OR ALTER PROC dbo.Shared AS SELECT 1"
+            assert loaded["procedures"]["dbo.Proc2"]["definition"] == "CREATE OR ALTER PROC dbo.Shared AS SELECT 1"
+            assert loaded["procedures"]["dbo.Proc3"]["definition"] == "CREATE OR ALTER PROC dbo.Unique AS SELECT 2"
+        finally:
+            os.unlink(filepath)
+
+    def test_compression_better_than_old_format(self):
+        shared_def = "CREATE OR ALTER PROC dbo.Shared AS BEGIN SET NOCOUNT ON; SELECT * FROM Users WHERE IsActive = 1; END"
+        extracted = {
+            "tables": {},
+            "procedures": {
+                f"dbo.Proc{i}": {
+                    "definition": shared_def if i % 3 == 0 else f"CREATE OR ALTER PROC dbo.Proc{i} AS BEGIN SELECT {i}; END",
+                    "hash": f"h{i}",
+                }
+                for i in range(50)
+            },
+            "functions": {},
+            "triggers": {},
+            "_meta": {"server": "localhost", "database": "TestDB"},
+        }
+        snap = create_snapshot(extracted)
+        
+        with tempfile.NamedTemporaryFile(suffix=".dbsnap", delete=False) as f:
+            filepath = f.name
+        
+        try:
+            save_snapshot(snap, filepath)
+            file_size = os.path.getsize(filepath)
+            
+            old_compressed = len(zstd.ZstdCompressor(level=10).compress(
+                json.dumps(snap, indent=2, ensure_ascii=False).encode('utf-8')
+            ))
+            
+            assert file_size < old_compressed
+        finally:
+            os.unlink(filepath)
