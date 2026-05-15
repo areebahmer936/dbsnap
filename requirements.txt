@@ -1,0 +1,5 @@
+pyodbc>=5.0
+zstandard>=0.22
+click>=8.0
+jinja2>=3.0
+tqdm>=4.0
