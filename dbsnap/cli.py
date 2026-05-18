@@ -9,6 +9,7 @@ from .extractor import extract_full_schema, connect_to_db
 from .snapshot import create_snapshot, save_snapshot, load_snapshot, get_snapshot_info
 from .comparator import compare_all_categories, filter_items, get_summary
 from .reporter import generate_report
+from .restorer import restore_snapshot
 
 
 @click.group()
@@ -154,6 +155,50 @@ def info(snapshot):
         click.echo(f"{'─' * 40}")
         click.echo(f"File size:    {_format_size(snap_info['file_size'])}")
         
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("snapshot", type=click.Path(exists=True))
+@click.option("--conn", required=True, help="Target database connection string")
+@click.option("--driver", default=None, help="ODBC driver name (auto-detected if not specified)")
+@click.option("--trust-server-cert", is_flag=True, help="Trust self-signed certificates")
+@click.option("--dry-run", is_flag=True, help="Print SQL without executing")
+@click.option("--schema-only", is_flag=True, default=True, help="Only restore schema (default)")
+@click.option("--with-data", is_flag=True, help="Also restore table data (if present in snapshot)")
+def restore(snapshot, conn, driver, trust_server_cert, dry_run, schema_only, with_data):
+    """Restore a .dbsnap file to a target database."""
+    try:
+        snap_info = get_snapshot_info(snapshot)
+        click.echo(f"Restoring: {os.path.basename(snapshot)}")
+        click.echo(f"  From: {snap_info['server']}/{snap_info['database']}")
+        click.echo(f"  Tables: {snap_info['table_count']}, Procedures: {snap_info['procedure_count']}")
+        click.echo(f"  Functions: {snap_info['function_count']}, Triggers: {snap_info['trigger_count']}")
+        click.echo()
+
+        if dry_run:
+            click.echo("-- DRY RUN --")
+
+        stats = restore_snapshot(
+            filepath=snapshot,
+            conn_str=conn,
+            driver=driver,
+            trust_cert=trust_server_cert,
+            schema_only=schema_only and not with_data,
+            dry_run=dry_run,
+        )
+
+        click.echo()
+        click.echo(f"Restore complete:")
+        click.echo(f"  Tables: {stats['tables']}")
+        click.echo(f"  Indexes: {stats['indexes']}")
+        click.echo(f"  Foreign Keys: {stats['foreign_keys']}")
+        click.echo(f"  Procedures: {stats['procedures']}")
+        click.echo(f"  Functions: {stats['functions']}")
+        click.echo(f"  Triggers: {stats['triggers']}")
+
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

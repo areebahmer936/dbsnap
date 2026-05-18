@@ -1,21 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec file for dbsnap."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-
-from dbsnap import __version__
+import os
 
 block_cipher = None
 
 a = Analysis(
-    ['dbsnap/cli.py'],
-    pathex=[],
+    ['run.py'],
+    pathex=[os.getcwd()],
     binaries=[],
     datas=[('dbsnap/templates/report.html', 'dbsnap/templates')],
-    hiddenimports=['zstandard', 'click', 'jinja2', 'tqdm', 'pyodbc'],
+    hiddenimports=['zstandard', 'click', 'jinja2', 'tqdm', 'pyodbc', 'dbsnap'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

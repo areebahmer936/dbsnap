@@ -28,7 +28,7 @@ echo To create the .exe installer:
 echo   1. Download and install Inno Setup 6 from https://jrsoftware.org/isdl.php
 echo   2. Open dbsnap-setup.iss in Inno Setup Compiler
 echo   3. Click Build ^> Compile
-echo   4. Installer will be at: dist\installer\dbsnap-1.0.0-setup.exe
+echo   4. Installer will be at: dist\installer\dbsnap-1.1.0-setup.exe
 echo.
 echo Alternatively, run from command line:
 echo   ISCC.exe dbsnap-setup.iss
