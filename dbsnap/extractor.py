@@ -49,7 +49,8 @@ from .hasher import compute_hash, compute_table_hash
 
 ODBC_BOOL_ATTRS = {"encrypt", "trustservercertificate", "trust server certificate",
                      "mars", "multipleactiveresultsets", "multiple active result sets",
-                     "integratedsecurity", "integrated security"}
+                     "integratedsecurity", "integrated security",
+                     "trustedconnection", "trusted connection"}
 
 CONN_STR_ALIASES = {
     "user id": "UID",
@@ -62,7 +63,8 @@ CONN_STR_ALIASES = {
     "initial catalog": "DATABASE",
     "trust server certificate": "TrustServerCertificate",
     "multiple active result sets": "MultipleActiveResultSets",
-    "trusted connection": "Integrated Security",
+    "trusted connection": "Trusted_Connection",
+    "integrated security": "Trusted_Connection",
 }
 
 SPECIAL_CHARS = set("#;{}")
