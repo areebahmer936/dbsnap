@@ -171,13 +171,11 @@ class TestDeduplication:
         try:
             save_snapshot(snap, filepath)
             
+            dctx = zstd.ZstdDecompressor()
             with open(filepath, 'rb') as f:
-                f.read(8)
-                compressed = f.read()
-            
-            decompressor = zstd.ZstdDecompressor()
-            json_data = decompressor.decompress(compressed)
-            raw = json.loads(json_data.decode('utf-8'))
+                assert f.read(8) == MAGIC_HEADER
+                with dctx.stream_reader(f) as reader:
+                    raw = json.load(reader)
             
             assert len(raw["defs"]) == 2
             

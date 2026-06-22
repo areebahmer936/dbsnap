@@ -176,7 +176,7 @@ def extract_tables(cursor) -> dict:
         
         schema_hash = compute_table_hash(columns, indexes, foreign_keys)
         
-        result[table_name] = {
+        result[full_name] = {
             "schema": schema_name,
             "columns": columns,
             "indexes": indexes,

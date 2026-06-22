@@ -1,8 +1,24 @@
 """Database restoration from .dbsnap files."""
 
 import pyodbc
+from tqdm import tqdm
 from .extractor import connect_to_db, detect_driver
-from .snapshot import load_snapshot
+from .snapshot import load_snapshot_schema, stream_data_tables
+from .data_exporter import restore_table_data, _deserialize_value
+
+
+def _create_schemas(cursor, tables):
+    """Create any non-dbo schemas referenced by tables in the snapshot."""
+    schemas = set()
+    for table in tables.values():
+        schema = table.get("schema", "dbo")
+        if schema.lower() != "dbo":
+            schemas.add(schema)
+    for schema in sorted(schemas):
+        try:
+            cursor.execute(f"IF SCHEMA_ID('{schema}') IS NULL EXEC('CREATE SCHEMA [{schema}]');")
+        except Exception:
+            pass
 
 
 def _sql_type(col):
@@ -11,9 +27,17 @@ def _sql_type(col):
     return t
 
 
-def _build_create_table(name, table):
-    """Generate a CREATE TABLE statement from snapshot data."""
+def _table_schema_and_name(key, table):
+    """Get schema and simple table name from snapshot key and table data."""
     schema = table.get("schema", "dbo")
+    parts = key.split(".", 1)
+    name = parts[1] if len(parts) > 1 else key
+    return schema, name
+
+
+def _build_create_table(full_key, table):
+    """Generate a CREATE TABLE statement from snapshot data."""
+    schema, name = _table_schema_and_name(full_key, table)
     lines = []
     lines.append(f"CREATE TABLE [{schema}].[{name}] (")
 
@@ -45,16 +69,16 @@ def _build_create_table(name, table):
     return "\n".join(lines)
 
 
-def _build_create_index(table_name, table):
+def _build_create_index(full_key, table):
     """Generate CREATE INDEX statements."""
-    schema = table.get("schema", "dbo")
+    schema, name = _table_schema_and_name(full_key, table)
     statements = []
     for idx in table.get("indexes", []):
         if "PK" in idx.get("name", ""):
             continue
         unique = "UNIQUE " if idx.get("unique") else ""
         keys = ", ".join(idx.get("keys", []))
-        stmt = f"CREATE {unique}{idx['type']} INDEX [{idx['name']}] ON [{schema}].[{table_name}] ({keys});"
+        stmt = f"CREATE {unique}{idx['type']} INDEX [{idx['name']}] ON [{schema}].[{name}] ({keys});"
         if idx.get("included"):
             included = ", ".join(f"[{c}]" for c in idx["included"])
             stmt = stmt.rstrip(";") + f" INCLUDE ({included});"
@@ -62,15 +86,15 @@ def _build_create_index(table_name, table):
     return statements
 
 
-def _build_create_fk(table_name, table):
+def _build_create_fk(full_key, table):
     """Generate ALTER TABLE ADD CONSTRAINT statements for foreign keys."""
-    schema = table.get("schema", "dbo")
+    schema, name = _table_schema_and_name(full_key, table)
     statements = []
     for fk in table.get("foreign_keys", []):
         on_delete = fk.get("on_delete", "NO_ACTION")
         on_update = fk.get("on_update", "NO_ACTION")
         stmt = (
-            f"ALTER TABLE [{schema}].[{table_name}] "
+            f"ALTER TABLE [{schema}].[{name}] "
             f"ADD CONSTRAINT [{fk['name']}] FOREIGN KEY ([{fk['from']}]) "
             f"REFERENCES [{fk['to_table']}].[{fk['to_column']}] "
             f"ON DELETE {on_delete} ON UPDATE {on_update};"
@@ -83,16 +107,24 @@ def _topological_sort_tables(tables):
     """Sort tables by FK dependencies so referenced tables are created first."""
     # Build dependency graph
     deps = {}
-    for name, table in tables.items():
+    # Build a lookup: simple_name -> full_key (for FK references that use simple names)
+    name_lookup = {}
+    for full_key in tables:
+        _, simple = _table_schema_and_name(full_key, tables[full_key])
+        name_lookup[simple] = full_key
+
+    for full_key, table in tables.items():
         ref_tables = set()
         for fk in table.get("foreign_keys", []):
             to_table = fk.get("to_table", "")
-            # Extract table name from schema.table format
-            if "." in to_table:
-                to_table = to_table.split(".")[-1]
-            if to_table != name and to_table in tables:
+            if to_table == full_key:
+                continue
+            # Try compound match first, then simple name lookup
+            if to_table in tables:
                 ref_tables.add(to_table)
-        deps[name] = ref_tables
+            elif to_table in name_lookup:
+                ref_tables.add(name_lookup[to_table])
+        deps[full_key] = ref_tables
 
     # Topological sort using Kahn's algorithm
     in_degree = {name: 0 for name in tables}
@@ -133,23 +165,18 @@ def _topological_sort_tables(tables):
 
 
 def _drop_existing_fks(cursor, tables):
-    """Drop all existing FK constraints in the target database for the tables we're restoring."""
+    """Drop all existing FK constraints on tables we're restoring."""
     dropped = 0
-    # Query the database for ALL FK constraints on our tables
-    table_names = list(tables.keys())
-    placeholders = ",".join(["?"] * len(table_names))
-    cursor.execute(f"""
-        SELECT 
-            SCHEMA_NAME(fk.schema_id) AS schema_name,
-            OBJECT_NAME(fk.parent_object_id) AS table_name,
-            fk.name AS fk_name
-        FROM sys.foreign_keys fk
-        WHERE OBJECT_NAME(fk.parent_object_id) IN ({placeholders})
-    """, *table_names)
-    
-    for schema_name, table_name, fk_name in cursor.fetchall():
+    for full_key in tables:
+        schema, name = _table_schema_and_name(full_key, tables[full_key])
         try:
-            cursor.execute(f"ALTER TABLE [{schema_name}].[{table_name}] DROP CONSTRAINT [{fk_name}];")
+            cursor.execute(f"""
+                DECLARE @sql NVARCHAR(MAX) = '';
+                SELECT @sql = @sql + 'ALTER TABLE [{schema}].[{name}] DROP CONSTRAINT [' + fk.name + ']; '
+                FROM sys.foreign_keys fk
+                WHERE fk.parent_object_id = OBJECT_ID('[{schema}].[{name}]');
+                EXEC sp_executesql @sql;
+            """)
             dropped += 1
         except Exception:
             pass
@@ -159,7 +186,6 @@ def _drop_existing_fks(cursor, tables):
 def _drop_existing_tables(cursor, tables):
     """Drop all existing tables, handling FK dependencies."""
     dropped = 0
-    # Keep trying to drop tables until none can be dropped
     remaining = list(tables.keys())
     max_iterations = len(remaining) + 5
     iteration = 0
@@ -167,24 +193,23 @@ def _drop_existing_tables(cursor, tables):
     while remaining and iteration < max_iterations:
         iteration += 1
         still_remaining = []
-        for name in remaining:
-            schema = tables[name].get("schema", "dbo")
+        for full_key in remaining:
+            schema, name = _table_schema_and_name(full_key, tables[full_key])
             try:
                 cursor.execute(f"DROP TABLE [{schema}].[{name}];")
                 dropped += 1
             except Exception:
-                still_remaining.append(name)
+                still_remaining.append(full_key)
         remaining = still_remaining
     
-    # Report any tables that couldn't be dropped
-    for name in remaining:
-        schema = tables[name].get("schema", "dbo")
+    for full_key in remaining:
+        schema, name = _table_schema_and_name(full_key, tables[full_key])
         print(f"  Warning: Could not drop existing table [{schema}].[{name}]")
     
     return dropped
 
 
-def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_only=True, dry_run=False):
+def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_only=True, with_data=False, dry_run=False):
     """Restore a .dbsnap file to a target database.
 
     Args:
@@ -193,16 +218,25 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
         driver: ODBC driver name
         trust_cert: Trust self-signed certificates
         schema_only: Only restore schema, not data
+        with_data: Also restore table data if present in snapshot
         dry_run: Print SQL without executing
 
     Returns:
         Dict with counts of restored objects
     """
-    snapshot = load_snapshot(filepath)
+    snapshot = load_snapshot_schema(filepath)
     conn = connect_to_db(conn_str, driver, trust_cert)
     cursor = conn.cursor()
 
-    stats = {"tables": 0, "indexes": 0, "foreign_keys": 0, "procedures": 0, "functions": 0, "triggers": 0}
+    stats = {"tables": 0, "indexes": 0, "foreign_keys": 0, "procedures": 0, "functions": 0, "triggers": 0, "rows": 0}
+    failed_tables = []
+    failed_procs = []
+    failed_funcs = []
+    failed_trigs = []
+    expected_fks = 0
+    failed_fks = 0
+    expected_idxs = 0
+    failed_idxs = 0
 
     try:
         cursor.execute("SET NOCOUNT ON;")
@@ -211,6 +245,10 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
         ordered = _topological_sort_tables(tables)
 
         if not dry_run:
+            # Pre-step: Create non-dbo schemas
+            _create_schemas(cursor, tables)
+            conn.commit()
+            
             # Pre-step: Drop existing FKs first, then tables
             print("  Dropping existing foreign keys...")
             _drop_existing_fks(cursor, tables)
@@ -223,7 +261,6 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
         # 1. Create tables in dependency order (without FKs)
         for name in ordered:
             table = tables[name]
-            # Temporarily remove FKs for table creation
             fks = table.get("foreign_keys", [])
             table["foreign_keys"] = []
             sql = _build_create_table(name, table)
@@ -236,16 +273,21 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                     cursor.execute(sql)
                     conn.commit()
                     stats["tables"] += 1
-                    print(f"  Created table: {name}")
                 except pyodbc.ProgrammingError as e:
                     if "already an object named" in str(e):
-                        print(f"  Skipped table (exists): {name}")
+                        stats["tables"] += 1  # Count existing tables too
                     else:
-                        print(f"  Warning: Failed to create table {name}: {e}")
+                        failed_tables.append((name, str(e)))
                 except Exception as e:
-                    print(f"  Warning: Failed to create table {name}: {e}")
+                    failed_tables.append((name, str(e)))
+
+        if failed_tables:
+            print(f"  {len(failed_tables)} tables failed to create:")
+            for tname, terr in failed_tables:
+                print(f"    - {tname}: {terr}")
 
         # 2. Create indexes
+        expected_idxs = sum(len(t.get("indexes", [])) for t in tables.values())
         for name in ordered:
             table = tables[name]
             for stmt in _build_create_index(name, table):
@@ -257,9 +299,10 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                         conn.commit()
                         stats["indexes"] += 1
                     except Exception as e:
-                        print(f"  Warning: Failed to create index on {name}: {e}")
+                        failed_idxs += 1
 
         # 3. Create foreign keys
+        expected_fks = sum(len(t.get("foreign_keys", [])) for t in tables.values())
         for name in ordered:
             table = tables[name]
             for stmt in _build_create_fk(name, table):
@@ -271,7 +314,7 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                         conn.commit()
                         stats["foreign_keys"] += 1
                     except Exception as e:
-                        print(f"  Warning: Failed to create FK on {name}: {e}")
+                        failed_fks += 1
 
         # 4. Create procedures
         for name, proc in snapshot.get("procedures", {}).items():
@@ -315,7 +358,61 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                 except Exception as e:
                     print(f"  Warning: Failed to create trigger {name}: {e}")
 
+        # 7. Restore data (if present and requested)
+        if with_data:
+            print("\n  Restoring data...")
+
+            if not dry_run:
+                print("  Disabling all foreign key constraints...")
+                cursor.execute("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL';")
+                conn.commit()
+
+            data_tables = list(stream_data_tables(filepath))
+            pbar = tqdm(data_tables, desc="  Tables", unit="table") if not dry_run else data_tables
+
+            for table_name, rows in pbar:
+                if table_name not in tables:
+                    continue
+                table = tables[table_name]
+                schema, name = _table_schema_and_name(table_name, table)
+                if not rows:
+                    continue
+                if dry_run:
+                    print(f"-- Would insert {len(rows)} rows into [{schema}].[{name}]")
+                else:
+                    try:
+                        identity_cols = [c["name"] for c in table.get("columns", []) if c.get("identity")]
+                        if not identity_cols and rows:
+                            first_row = rows[0]
+                            for col_name in first_row.keys():
+                                for c in table.get("columns", []):
+                                    if c["name"].lower() == col_name.lower() and c.get("identity"):
+                                        identity_cols.append(c["name"])
+                                        break
+                        inserted = restore_table_data(cursor, schema, name, rows, identity_cols)
+                        stats["rows"] += inserted
+                        if inserted > 0:
+                            pbar.write(f"  Inserted {inserted} rows into {name}")
+                        conn.commit()
+                    except Exception as e:
+                        pbar.write(f"  Warning: Failed to restore data for {name}: {e}")
+
+            if not dry_run:
+                print("  Re-enabling foreign key constraints with check...")
+                cursor.execute("EXEC sp_msforeachtable 'ALTER TABLE ? WITH CHECK CHECK CONSTRAINT ALL';")
+                conn.commit()
+
     finally:
         conn.close()
+
+    # Print summary of failures
+    if failed_tables:
+        print(f"\n  Tables failed: {len(failed_tables)}")
+        for name, err in failed_tables[:5]:
+            print(f"    - {name}: {err[:100]}")
+    if failed_fks:
+        print(f"  Foreign keys failed: {failed_fks} (expected ~{expected_fks})")
+    if failed_idxs:
+        print(f"  Indexes failed: {failed_idxs} (expected ~{expected_idxs})")
 
     return stats

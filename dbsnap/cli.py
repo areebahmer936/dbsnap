@@ -6,10 +6,11 @@ import click
 
 from . import __version__
 from .extractor import extract_full_schema, connect_to_db
-from .snapshot import create_snapshot, save_snapshot, load_snapshot, get_snapshot_info
+from .snapshot import create_snapshot, save_snapshot, load_snapshot_schema, get_snapshot_info
 from .comparator import compare_all_categories, filter_items, get_summary
 from .reporter import generate_report
 from .restorer import restore_snapshot
+from .data_exporter import export_all_data
 
 
 @click.group()
@@ -24,9 +25,14 @@ def main():
 @click.option("--out", required=True, type=click.Path(), help="Output .dbsnap file path")
 @click.option("--driver", default=None, help="ODBC driver name (auto-detected if not specified)")
 @click.option("--trust-server-cert", is_flag=True, help="Trust self-signed certificates")
+@click.option("--with-data", is_flag=True, help="Also export table data")
+@click.option("--compress", default="auto", type=click.Choice(["auto", "fast", "medium", "high", "max"]),
+              help="Compression level: auto (level 19 schema / 6 data), fast (3), medium (9), high (15), max (19)")
 @click.option("--no-progress", is_flag=True, help="Disable progress output")
-def snapshot(conn, out, driver, trust_server_cert, no_progress):
+def snapshot(conn, out, driver, trust_server_cert, with_data, compress, no_progress):
     """Take a snapshot of a SQL Server database schema."""
+    COMPRESS_MAP = {"fast": 3, "medium": 9, "high": 15, "max": 19}
+    compress_level = COMPRESS_MAP.get(compress) if compress != "auto" else None
     try:
         extracted = extract_full_schema(
             conn_str=conn,
@@ -41,7 +47,22 @@ def snapshot(conn, out, driver, trust_server_cert, no_progress):
             database=extracted.get("_meta", {}).get("database"),
         )
         
-        save_snapshot(snap, out)
+        if with_data:
+            click.echo("\nExporting data...")
+            data = export_all_data(
+                conn_str=conn,
+                tables=snap["tables"],
+                driver=driver,
+                trust_cert=trust_server_cert,
+            )
+            snap["data"] = data
+        if with_data:
+            total_rows = sum(len(rows) for rows in data.values())
+            snap["meta"]["data_row_count"] = total_rows
+            click.echo(f"\nSaving snapshot (compressing {total_rows} rows)...")
+            save_snapshot(snap, out, compress_level=compress_level)
+        else:
+            save_snapshot(snap, out, compress_level=compress_level)
         
         file_size = os.path.getsize(out)
         click.echo(f"\nSnapshot saved to: {out}")
@@ -50,6 +71,9 @@ def snapshot(conn, out, driver, trust_server_cert, no_progress):
         click.echo(f"Procedures: {len(snap['procedures'])}")
         click.echo(f"Functions: {len(snap['functions'])}")
         click.echo(f"Triggers: {len(snap['triggers'])}")
+        if with_data:
+            total_rows = sum(len(rows) for rows in snap.get("data", {}).values())
+            click.echo(f"Data rows: {total_rows}")
         
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
@@ -72,7 +96,7 @@ def compare(left, right, conn, out, driver, trust_server_cert, no_identical,
             schema_only, procs_only, functions_only, triggers_only):
     """Compare two snapshots or a snapshot vs a live database."""
     try:
-        left_snap = load_snapshot(left)
+        left_snap = load_snapshot_schema(left)
         left_name = os.path.basename(left)
         left_meta = left_snap.get("meta", {})
         
@@ -92,7 +116,7 @@ def compare(left, right, conn, out, driver, trust_server_cert, no_identical,
             right_name = f"Live: {right_snap['meta']['database']}"
             right_meta = right_snap.get("meta", {})
         elif right:
-            right_snap = load_snapshot(right)
+            right_snap = load_snapshot_schema(right)
             right_name = os.path.basename(right)
             right_meta = right_snap.get("meta", {})
         else:
@@ -152,6 +176,8 @@ def info(snapshot):
         click.echo(f"Procedures:   {snap_info['procedure_count']}")
         click.echo(f"Functions:    {snap_info['function_count']}")
         click.echo(f"Triggers:     {snap_info['trigger_count']}")
+        if snap_info.get('data_rows', 0) > 0:
+            click.echo(f"Data rows:    {snap_info['data_rows']}")
         click.echo(f"{'─' * 40}")
         click.echo(f"File size:    {_format_size(snap_info['file_size'])}")
         
@@ -187,6 +213,7 @@ def restore(snapshot, conn, driver, trust_server_cert, dry_run, schema_only, wit
             driver=driver,
             trust_cert=trust_server_cert,
             schema_only=schema_only and not with_data,
+            with_data=with_data,
             dry_run=dry_run,
         )
 
@@ -198,6 +225,8 @@ def restore(snapshot, conn, driver, trust_server_cert, dry_run, schema_only, wit
         click.echo(f"  Procedures: {stats['procedures']}")
         click.echo(f"  Functions: {stats['functions']}")
         click.echo(f"  Triggers: {stats['triggers']}")
+        if stats.get('rows', 0) > 0:
+            click.echo(f"  Data rows: {stats['rows']}")
 
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
