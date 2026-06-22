@@ -345,6 +345,7 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
 
         # 3. Create foreign keys
         expected_fks = sum(len(t.get("foreign_keys", [])) for t in tables.values())
+        fk_errors = []
         for name in ordered:
             table = tables[name]
             for stmt in _build_create_fk(name, table):
@@ -357,6 +358,12 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                         stats["foreign_keys"] += 1
                     except Exception as e:
                         failed_fks += 1
+                        if len(fk_errors) < 5:
+                            fk_errors.append((name, str(e)))
+        if fk_errors:
+            print(f"  FK creation errors (showing first {len(fk_errors)}):")
+            for tname, terr in fk_errors:
+                print(f"    - {tname}: {terr[:100]}")
 
         # 4. Create procedures
         for name, proc in snapshot.get("procedures", {}).items():
