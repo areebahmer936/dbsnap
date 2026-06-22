@@ -124,10 +124,16 @@ def _build_create_fk(full_key, table):
     for fk in table.get("foreign_keys", []):
         on_delete = fk.get("on_delete", "NO_ACTION")
         on_update = fk.get("on_update", "NO_ACTION")
+        # Split to_table into schema and table name
+        to_table = fk.get("to_table", "")
+        if "." in to_table:
+            to_schema, to_name = to_table.split(".", 1)
+        else:
+            to_schema, to_name = "dbo", to_table
         stmt = (
             f"ALTER TABLE [{schema}].[{name}] "
             f"ADD CONSTRAINT [{fk['name']}] FOREIGN KEY ([{fk['from']}]) "
-            f"REFERENCES [{fk['to_table']}].[{fk['to_column']}] "
+            f"REFERENCES [{to_schema}].[{to_name}] ([{fk['to_column']}]) "
             f"ON DELETE {on_delete} ON UPDATE {on_update};"
         )
         statements.append(stmt)
