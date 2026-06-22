@@ -14,11 +14,11 @@ pyinstaller --clean dbsnap.spec
 
 REM Verify build
 echo [3/4] Verifying build...
-if not exist "dist\dbsnap\dbsnap.exe" (
+if not exist "dist\dbsnap.exe" (
     echo ERROR: Build failed - dbsnap.exe not found
     exit /b 1
 )
-echo Build successful: dist\dbsnap\dbsnap.exe
+echo Build successful: dist\dbsnap.exe
 
 REM Instructions for Inno Setup
 echo.

@@ -37,8 +37,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "addtopath"; Description: "Add {#MyAppName} to system PATH"; GroupDescription: "Environment:"; Flags: unchecked
 
 [Files]
-Source: "dist\dbsnap\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\dbsnap\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

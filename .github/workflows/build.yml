@@ -78,9 +78,9 @@ jobs:
 
       - name: Package as tar.gz
         run: |
-          cd dist/dbsnap
-          tar czf ../../dbsnap-linux.tar.gz dbsnap ./_internal
-          cd ../..
+          cd dist
+          tar czf ../dbsnap-linux.tar.gz dbsnap
+          cd ..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
