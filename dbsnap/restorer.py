@@ -1,10 +1,41 @@
 """Database restoration from .dbsnap files."""
 
 import pyodbc
+import re
 from tqdm import tqdm
-from .extractor import connect_to_db, detect_driver
+from .extractor import connect_to_db, detect_driver, build_connection_string
 from .snapshot import load_snapshot_schema, stream_data_tables
 from .data_exporter import restore_table_data, _deserialize_value
+
+
+def _ensure_database_exists(conn_str, driver=None, trust_cert=False):
+    """Create the target database if it doesn't exist.
+
+    Connects to master, checks for the database, creates it if missing.
+    Returns (True, False) if DB existed, (True, True) if DB was just created,
+    (False, False) on failure.
+    """
+    match = re.search(r'(?i)(?:DATABASE|INITIAL\s+CATALOG)\s*=\s*([^;]+)', conn_str)
+    if not match:
+        return True, False
+    db_name = match.group(1).strip().strip('{}')
+
+    master_str = re.sub(r'(?i)(DATABASE|INITIAL\s+CATALOG)\s*=\s*[^;]+', r'\1=master', conn_str)
+
+    try:
+        master_conn = connect_to_db(master_str, driver, trust_cert)
+        master_conn.autocommit = True
+        cursor = master_conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM sys.databases WHERE name = ?", db_name)
+        existed = cursor.fetchone()[0] > 0
+        if not existed:
+            cursor.execute(f"CREATE DATABASE [{db_name}];")
+            print(f"  Created database: {db_name}")
+        master_conn.close()
+        return True, not existed  # (ok, is_new)
+    except Exception as e:
+        print(f"  Warning: Could not auto-create database {db_name}: {e}")
+        return False, False
 
 
 def _create_schemas(cursor, tables):
@@ -225,6 +256,11 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
         Dict with counts of restored objects
     """
     snapshot = load_snapshot_schema(filepath)
+
+    is_new_db = False
+    if not dry_run:
+        ok, is_new_db = _ensure_database_exists(conn_str, driver, trust_cert)
+
     conn = connect_to_db(conn_str, driver, trust_cert)
     cursor = conn.cursor()
 
@@ -249,14 +285,14 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
             _create_schemas(cursor, tables)
             conn.commit()
             
-            # Pre-step: Drop existing FKs first, then tables
-            print("  Dropping existing foreign keys...")
-            _drop_existing_fks(cursor, tables)
-            conn.commit()
+            if not is_new_db:
+                print("  Dropping existing foreign keys...")
+                _drop_existing_fks(cursor, tables)
+                conn.commit()
 
-            print("  Dropping existing tables...")
-            _drop_existing_tables(cursor, tables)
-            conn.commit()
+                print("  Dropping existing tables...")
+                _drop_existing_tables(cursor, tables)
+                conn.commit()
 
         # 1. Create tables in dependency order (without FKs)
         for name in ordered:
