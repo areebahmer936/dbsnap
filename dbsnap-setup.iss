@@ -3,7 +3,7 @@
 ; Download: https://jrsoftware.org/isdl.php
 
 #define MyAppName "dbsnap"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "areebahmer936"
 #define MyAppExeName "dbsnap.exe"
 #define MyAppURL "https://github.com/areebahmer936/dbsnap"
