@@ -80,6 +80,9 @@ def normalize_conn_str_for_odbc(conn_str: str) -> str:
         value = match.group(2)
         
         normalized_key = CONN_STR_ALIASES.get(key.lower(), key)
+        # Remove spaces from keys that aren't recognized aliases (ODBC doesn't use spaces)
+        if ' ' in normalized_key and normalized_key.lower() not in CONN_STR_ALIASES:
+            normalized_key = normalized_key.replace(' ', '')
         
         if value.startswith("{") and value.endswith("}"):
             return f"{normalized_key}={value}"
