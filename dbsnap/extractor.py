@@ -50,7 +50,7 @@ from .hasher import compute_hash, compute_table_hash
 ODBC_BOOL_ATTRS = {"encrypt", "trustservercertificate", "trust server certificate",
                      "mars", "multipleactiveresultsets", "multiple active result sets",
                      "integratedsecurity", "integrated security",
-                     "trustedconnection", "trusted connection"}
+                     "trustedconnection", "trusted connection", "trusted_connection"}
 
 CONN_STR_ALIASES = {
     "user id": "UID",
