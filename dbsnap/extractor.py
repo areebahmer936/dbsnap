@@ -47,7 +47,9 @@ from tqdm import tqdm
 from .hasher import compute_hash, compute_table_hash
 
 
-ODBC_BOOL_ATTRS = {"encrypt", "trustservercertificate", "mars", "integratedsecurity"}
+ODBC_BOOL_ATTRS = {"encrypt", "trustservercertificate", "trust server certificate",
+                     "mars", "multipleactiveresultsets", "multiple active result sets",
+                     "integratedsecurity", "integrated security"}
 
 CONN_STR_ALIASES = {
     "user id": "UID",
@@ -58,6 +60,9 @@ CONN_STR_ALIASES = {
     "data source": "SERVER",
     "database": "DATABASE",
     "initial catalog": "DATABASE",
+    "trust server certificate": "TrustServerCertificate",
+    "multiple active result sets": "MultipleActiveResultSets",
+    "trusted connection": "Integrated Security",
 }
 
 SPECIAL_CHARS = set("#;{}")
