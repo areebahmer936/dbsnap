@@ -1,0 +1,121 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ── Windows build ────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyinstaller zstandard click jinja2 tqdm pyodbc ijson
+
+      - name: Build with PyInstaller
+        run: pyinstaller --clean dbsnap.spec
+
+      - name: Install Inno Setup
+        uses: crazy-max/ghaction-chocolatey@v3
+        with:
+          args: install innosetup --no-progress
+
+      - name: Update installer version from tag
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v', ''
+          (Get-Content dbsnap-setup.iss) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion ""$ver""" | Set-Content dbsnap-setup.iss
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dbsnap-setup.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist\installer\dbsnap-*-setup.exe
+          if-no-files-found: error
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: dist\dbsnap\dbsnap.exe
+          if-no-files-found: error
+
+  # ── Linux build ──────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyinstaller zstandard click jinja2 tqdm pyodbc ijson
+
+      - name: Build with PyInstaller
+        run: pyinstaller --clean dbsnap.spec
+
+      - name: Package as tar.gz
+        run: |
+          cd dist/dbsnap
+          tar czf ../../dbsnap-linux.tar.gz dbsnap ./_internal
+          cd ../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-portable
+          path: dbsnap-linux.tar.gz
+          if-no-files-found: error
+
+  # ── Create GitHub Release ────────────────────────────────────
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: dbsnap ${{ github.ref_name }}
+          body: |
+            ## dbsnap ${{ github.ref_name }}
+
+            SQL Server Schema Snapshot & Diff Tool
+
+            ### Downloads
+            - **Windows Installer** — `.exe` setup with PATH option
+            - **Windows Portable** — standalone `.exe`
+            - **Linux Portable** — standalone binary (`.tar.gz`)
+          files: |
+            artifacts/windows-installer/*
+            artifacts/windows-portable/*
+            artifacts/linux-portable/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
