@@ -247,7 +247,7 @@ def _extract_columns(cursor, object_id: int) -> list:
 
 
 def _extract_indexes(cursor, object_id: int) -> list:
-    """Extract indexes for a table (excluding primary keys)."""
+    """Extract indexes for a table."""
     cursor.execute("""
         SELECT
             i.name AS index_name,
@@ -272,14 +272,12 @@ def _extract_indexes(cursor, object_id: int) -> list:
     for row in rows:
         idx_name, idx_type, is_unique, is_pk, col_name, key_ordinal, is_desc, is_included = row
         
-        if is_pk:
-            continue
-        
         if idx_name not in indexes:
             indexes[idx_name] = {
                 "name": idx_name,
                 "type": idx_type,
                 "unique": bool(is_unique),
+                "is_primary_key": bool(is_pk),
                 "keys": [],
                 "included": [],
             }

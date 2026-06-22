@@ -86,7 +86,15 @@ def _build_create_table(full_key, table):
 
     # Find primary key columns
     for idx in table.get("indexes", []):
-        if idx.get("unique") and "CLUSTERED" in idx.get("type", "") and "PK" in idx.get("name", ""):
+        # Use is_primary_key flag if available (new snapshots), else fallback to heuristic
+        is_pk = idx.get("is_primary_key", None)
+        if is_pk is None:
+            is_pk = (
+                idx.get("unique") and
+                "CLUSTERED" in idx.get("type", "") and
+                ("PK" in idx.get("name", "") or "PRIMARY" in idx.get("type", ""))
+            )
+        if is_pk:
             keys = [k.split()[0].strip("[]") for k in idx.get("keys", [])]
             pk_cols = keys
             break
@@ -101,11 +109,14 @@ def _build_create_table(full_key, table):
 
 
 def _build_create_index(full_key, table):
-    """Generate CREATE INDEX statements."""
+    """Generate CREATE INDEX statements (skips PKs included in CREATE TABLE)."""
     schema, name = _table_schema_and_name(full_key, table)
     statements = []
     for idx in table.get("indexes", []):
-        if "PK" in idx.get("name", ""):
+        is_pk = idx.get("is_primary_key", False)
+        if not is_pk and "PK" in idx.get("name", ""):
+            is_pk = True
+        if is_pk:
             continue
         unique = "UNIQUE " if idx.get("unique") else ""
         keys = ", ".join(idx.get("keys", []))
@@ -122,8 +133,8 @@ def _build_create_fk(full_key, table):
     schema, name = _table_schema_and_name(full_key, table)
     statements = []
     for fk in table.get("foreign_keys", []):
-        on_delete = fk.get("on_delete", "NO_ACTION")
-        on_update = fk.get("on_update", "NO_ACTION")
+        on_delete = fk.get("on_delete", "NO_ACTION").replace("_", " ")
+        on_update = fk.get("on_update", "NO_ACTION").replace("_", " ")
         # Split to_table into schema and table name
         to_table = fk.get("to_table", "")
         if "." in to_table:
