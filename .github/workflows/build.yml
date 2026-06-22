@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v2.0.0)'
+        required: true
+        default: 'v2.0.0'
 
 jobs:
   # ── Windows build ────────────────────────────────────────────
@@ -31,7 +37,7 @@ jobs:
       - name: Update installer version from tag
         shell: pwsh
         run: |
-          $ver = "${{ github.ref_name }}" -replace '^v', ''
+          $ver = "${{ github.event.inputs.version || github.ref_name }}" -replace '^v', ''
           (Get-Content dbsnap-setup.iss) -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion ""$ver""" | Set-Content dbsnap-setup.iss
 
       - name: Build installer with Inno Setup
@@ -101,7 +107,8 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: dbsnap ${{ github.ref_name }}
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: dbsnap ${{ github.event.inputs.version || github.ref_name }}
           body: |
             ## dbsnap ${{ github.ref_name }}
 
