@@ -155,13 +155,12 @@ def restore_table_data(cursor, schema, table_name, rows, identity_columns=None):
         identity_columns: List of column names that are identity columns
 
     Returns:
-        Number of rows inserted
+        Tuple of (rows_inserted, table_cleared)
     """
     if not rows:
-        return 0
+        return 0, True
 
     identity_columns = identity_columns or []
-    # Case-insensitive check if first row has identity columns
     first_row_keys = {k.lower() for k in rows[0].keys()} if rows else set()
     has_identity = any(
         (isinstance(ic, str) and ic.lower() in first_row_keys)
@@ -170,13 +169,19 @@ def restore_table_data(cursor, schema, table_name, rows, identity_columns=None):
     ) if rows else bool(identity_columns)
 
     # Clear existing data first to avoid PK conflicts
+    cleared = False
     try:
         cursor.execute(f"DELETE FROM [{schema}].[{table_name}];")
+        cleared = True
     except Exception:
         try:
             cursor.execute(f"TRUNCATE TABLE [{schema}].[{table_name}];")
+            cleared = True
         except Exception:
             pass
+
+    if not cleared:
+        return 0, False
 
     columns = list(rows[0].keys())
     col_list = ", ".join(f"[{c}]" for c in columns)

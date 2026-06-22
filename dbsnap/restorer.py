@@ -424,7 +424,15 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
 
             if not dry_run:
                 print("  Disabling all foreign key constraints...")
-                cursor.execute("EXEC sp_msforeachtable 'ALTER TABLE ? NOCHECK CONSTRAINT ALL';")
+                # Disable all FK constraints via dynamic SQL (more reliable than sp_msforeachtable)
+                cursor.execute("""
+                    DECLARE @sql NVARCHAR(MAX) = '';
+                    SELECT @sql = @sql + 'ALTER TABLE [' + s.name + '].[' + t.name + '] NOCHECK CONSTRAINT ALL; '
+                    FROM sys.foreign_keys fk
+                    JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                    JOIN sys.schemas s ON t.schema_id = s.schema_id;
+                    EXEC sp_executesql @sql;
+                """)
                 conn.commit()
 
             data_tables = list(stream_data_tables(filepath))
@@ -449,9 +457,11 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
                                     if c["name"].lower() == col_name.lower() and c.get("identity"):
                                         identity_cols.append(c["name"])
                                         break
-                        inserted = restore_table_data(cursor, schema, name, rows, identity_cols)
+                        inserted, cleared = restore_table_data(cursor, schema, name, rows, identity_cols)
                         stats["rows"] += inserted
-                        if inserted > 0:
+                        if not cleared:
+                            pbar.write(f"  Skipped {name} (could not clear table)")
+                        elif inserted > 0:
                             pbar.write(f"  Inserted {inserted} rows into {name}")
                         conn.commit()
                     except Exception as e:
@@ -459,7 +469,14 @@ def restore_snapshot(filepath, conn_str, driver=None, trust_cert=False, schema_o
 
             if not dry_run:
                 print("  Re-enabling foreign key constraints with check...")
-                cursor.execute("EXEC sp_msforeachtable 'ALTER TABLE ? WITH CHECK CHECK CONSTRAINT ALL';")
+                cursor.execute("""
+                    DECLARE @sql NVARCHAR(MAX) = '';
+                    SELECT @sql = @sql + 'ALTER TABLE [' + s.name + '].[' + t.name + '] WITH CHECK CHECK CONSTRAINT ALL; '
+                    FROM sys.foreign_keys fk
+                    JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                    JOIN sys.schemas s ON t.schema_id = s.schema_id;
+                    EXEC sp_executesql @sql;
+                """)
                 conn.commit()
 
     finally:
