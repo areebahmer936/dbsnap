@@ -122,6 +122,49 @@ class TestComputeDiffs:
         assert len(only_right[0].unified_diff) > 0
 
 
+class TestComputeDiffsLineEndings:
+    def _changed_lines(self, item):
+        return [
+            line for line in item.unified_diff
+            if line.startswith(("+", "-"))
+            and not line.startswith(("+++", "---"))
+        ]
+
+    def test_crlf_vs_lf_is_not_a_full_change(self):
+        left = "CREATE PROC dbo.GetUser\r\nAS\r\nSELECT 1\r\n"
+        right = "CREATE PROC dbo.GetUser\nAS\nSELECT 1\n"
+        item = DiffItem(name="dbo.GetUser", status="modified", left_def=left, right_def=right)
+        compute_diffs([item])
+        assert self._changed_lines(item) == []
+
+    def test_single_added_line_with_crlf_mismatch(self):
+        left = "CREATE PROC dbo.GetUser\r\nAS\r\nSELECT 1\r\n"
+        right = "-- header\nCREATE PROC dbo.GetUser\nAS\nSELECT 1\n"
+        item = DiffItem(name="dbo.GetUser", status="modified", left_def=left, right_def=right)
+        compute_diffs([item])
+        added = [
+            line for line in item.unified_diff
+            if line.startswith("+") and not line.startswith("+++")
+        ]
+        removed = [
+            line for line in item.unified_diff
+            if line.startswith("-") and not line.startswith("---")
+        ]
+        assert added == ["+-- header"]
+        assert removed == []
+
+    def test_only_in_left_has_no_embedded_newlines(self):
+        item = DiffItem(name="dbo.DropMe", status="only_in_left", left_def="A\r\nB\r\n")
+        compute_diffs([item])
+        assert item.unified_diff == ["-A", "-B"]
+
+    def test_only_in_right_has_no_embedded_newlines(self):
+        item = DiffItem(name="dbo.New", status="only_in_right", right_def="A\r\nB\r\n")
+        compute_diffs([item])
+        assert item.unified_diff == ["+A", "+B"]
+
+
+
 class TestGetSummary:
     def test_correct_counts(self):
         comparison = compare_all_categories(LEFT_SNAPSHOT, RIGHT_SNAPSHOT)

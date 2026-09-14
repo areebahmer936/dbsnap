@@ -77,6 +77,24 @@ def compare_snapshots(left: dict, right: dict, category: str) -> list:
     return items
 
 
+def _normalize_line_endings(text: str) -> str:
+    """Normalize CRLF/CR line endings to LF.
+
+    SQL Server stores definitions with whatever endings they were created
+    with, so the snapshot and a live database can differ by CRLF vs LF only.
+    Without this, difflib treats every line as changed and a one-line edit
+    renders as a full rewrite.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _split_lines(text: Optional[str]) -> list:
+    """Split a definition into logical lines with normalized endings."""
+    if not text:
+        return []
+    return _normalize_line_endings(text).splitlines()
+
+
 def compute_diffs(items: list) -> list:
     """Compute unified diffs for all modified items.
     
@@ -87,10 +105,10 @@ def compute_diffs(items: list) -> list:
         Updated list with unified_diff populated
     """
     for item in items:
+        left_lines = _split_lines(item.left_def)
+        right_lines = _split_lines(item.right_def)
+
         if item.status == "modified" and item.left_def and item.right_def:
-            left_lines = item.left_def.splitlines(keepends=True)
-            right_lines = item.right_def.splitlines(keepends=True)
-            
             diff = list(difflib.unified_diff(
                 left_lines,
                 right_lines,
@@ -100,13 +118,9 @@ def compute_diffs(items: list) -> list:
             ))
             item.unified_diff = diff
         elif item.status == "only_in_left":
-            left_lines = item.left_def.splitlines(keepends=True) if item.left_def else []
-            diff = [f"-{line}" for line in left_lines]
-            item.unified_diff = diff
+            item.unified_diff = [f"-{line}" for line in left_lines]
         elif item.status == "only_in_right":
-            right_lines = item.right_def.splitlines(keepends=True) if item.right_def else []
-            diff = [f"+{line}" for line in right_lines]
-            item.unified_diff = diff
+            item.unified_diff = [f"+{line}" for line in right_lines]
     
     return items
 
